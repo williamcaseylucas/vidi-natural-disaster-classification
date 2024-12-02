@@ -37,6 +37,8 @@ def get_frames_from_video(
             indices = np.linspace(0, size - 1, frame_sample_rate).astype(np.int16)
             filtered_array.append(f[indices])
         pbar.update(1)
-        return np.stack([f for f in filtered_array]).transpose(
-            0, 1, 4, 2, 3
+        return (
+            np.stack([f for f in filtered_array])
+            .transpose(0, 1, 4, 2, 3)
+            .astype(np.float64)
         )  # batches, frames, height, width, channels

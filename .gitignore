@@ -3,4 +3,3 @@ dataset/full_video_examples/*
 .env
 cookies.txt
 __pycache__
-__pycache__/*

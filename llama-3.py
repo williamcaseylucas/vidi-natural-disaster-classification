@@ -13,8 +13,17 @@ from langchain.memory import ConversationEntityMemory
 from langchain.memory.prompt import ENTITY_MEMORY_CONVERSATION_TEMPLATE
 from tqdm import tqdm
 
-from git_captioner import GitCaptioner
+from caption_models import GitCaptioner, TimesformerCaptioner
 import os
+from ipywidgets import Video
+from IPython.display import display
+from enum import Enum
+
+
+class VideoCaptionType(Enum):
+    # .name = .value
+    GIT = "git"
+    TIMESFORMER = "timesformer"
 
 
 def text_generation_example():
@@ -121,6 +130,15 @@ def use_entity_memory_with_custom_system_template(
 
 class Llama3Chat:
     def __init__(self, video_caption_generator, verbose=False):
+        match video_caption_generator.value:
+            case "git":
+                video_caption_generator = GitCaptioner()
+            case "timesformer":
+                video_caption_generator = TimesformerCaptioner()
+            case _:
+                raise ValueError(
+                    "video_caption_generator must be one of ['git', 'timesformer']"
+                )
         self.video_caption_generator = video_caption_generator
 
         model = OllamaLLM(model="llama3.2")
@@ -178,9 +196,10 @@ class Llama3Chat:
     def get_video_caption_generator(self):
         return self.video_caption_generator
 
-    def get_captions_from_video(self, video_path):
+    def get_captions_from_video(self, video_path, interval_of_window):
         captions = self.video_caption_generator.get_captions_and_intervals_in_seconds(
             video_path=video_path,
+            interval_of_window=interval_of_window,
         )
         return captions
 
@@ -205,12 +224,16 @@ def get_paths_to_videos(file_path):
     return paths
 
 
+# load video
 video_paths = get_paths_to_videos("./dataset/full_video_examples")
-# "./dataset/full_video_examples/volcanic_eruption/VBTAcACmcgo.mp4"
+video_path = video_paths[1]
+if video_path.split(".")[-1] == "mp4":
+    demo = Video.from_file(video_path)  # to view video
+    display(demo)
 
-video_paths[0]
-chat = Llama3Chat(video_caption_generator=GitCaptioner(), verbose=False)
-captions = chat.get_captions_from_video(video_path=video_paths[0])
+
+chat = Llama3Chat(video_caption_generator=VideoCaptionType.GIT, verbose=False)
+captions = chat.get_captions_from_video(video_path=video_path, interval_of_window=5)
 chat.establish_context(captions=captions)
 
 chat.ask_question(question="Did a tree fall down at some point in the video?")
