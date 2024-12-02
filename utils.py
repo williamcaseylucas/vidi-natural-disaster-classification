@@ -18,7 +18,7 @@ def get_wholistic_df():
     return df
 
 
-def download_by_pandas_id(row):
+def download_by_pandas_id(row, full_video=False):
     label, id, start, end, lang = row
     url = BASE_URL + id
 
@@ -27,13 +27,13 @@ def download_by_pandas_id(row):
     if not os.path.exists(f"{VIDEO_DIR}/{label}"):
         os.makedirs(f"{VIDEO_DIR}/{label}", exist_ok=True)
 
-    out_path = os.path.join(
-        "./dataset/videos",
-        label,
-        "%(id)s" + f"=s{start}e{end}" + "." + "%(ext)s",
-    )
-    with YoutubeDL(
-        {
+    if not full_video:
+        out_path = os.path.join(
+            "./dataset/videos",
+            label,
+            "%(id)s" + f"=s{start}e{end}" + "." + "%(ext)s",
+        )
+        options = {
             # can use 'title' or 'id'
             "outtmpl": out_path,
             "format": f"bestvideo[height<={720}]",
@@ -43,17 +43,30 @@ def download_by_pandas_id(row):
             "ignoreerrors": True,
             "cookies": "cookies.txt",
         }
-    ) as ydl:
+    else:
+        out_path = os.path.join(
+            "./dataset/full_video_examples",
+            label,
+            "%(id)s.%(ext)s",
+        )
+        options = {
+            # can use 'title' or 'id'
+            "outtmpl": out_path,
+            "format": f"bestvideo[height<={720}]",
+            "quiet": True,
+            "ignoreerrors": True,
+            "cookies": "cookies.txt",
+        }
+
+    with YoutubeDL(options) as ydl:
         ydl.download([url])
 
 
-def download_all_with_concurrency():
-    df = get_wholistic_df()
-
+def download_with_concurrency(df, full_video):
     with tqdm(total=len(df)) as pbar:
         with concurrent.futures.ThreadPoolExecutor() as executor:
             future_to_url = {
-                executor.submit(download_by_pandas_id, row): id
+                executor.submit(download_by_pandas_id, row, full_video): id
                 for id, row in df.iterrows()
             }
             for future in concurrent.futures.as_completed(future_to_url):

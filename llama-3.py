@@ -11,6 +11,10 @@ from langchain.memory import ConversationBufferMemory
 from langchain_core.prompts.prompt import PromptTemplate
 from langchain.memory import ConversationEntityMemory
 from langchain.memory.prompt import ENTITY_MEMORY_CONVERSATION_TEMPLATE
+from tqdm import tqdm
+
+from git_captioner import GitCaptioner
+import os
 
 
 def text_generation_example():
@@ -114,62 +118,101 @@ def use_entity_memory_with_custom_system_template(
 #     system_template="You are a helpful news anchor who is reporting on natural disaster events",
 # )
 
-model = OllamaLLM(model="llama3.2")
 
-system_message = " ".join(
-    [
-        "The following is a friendly conversation between a human and an AI. The AI is talkative and provides lots of specific details from its context. If the AI does not know the answer to a question, it truthfully says it does not know.",
-        "Ensure the video caption's main theme is about a natural disaster and the damages",
-        "Ensure you provide information about damaged infrastructure mainly such as buildings, debris, highways",
-    ]
-)
+class Llama3Chat:
+    def __init__(self, video_caption_generator, verbose=False):
+        self.video_caption_generator = video_caption_generator
 
-template = """
+        model = OllamaLLM(model="llama3.2")
 
-Entities:
-{entities}
+        system_message = " ".join(
+            [
+                "The following is a friendly conversation between a human and an AI. The AI is talkative and provides lots of specific details from its context. If the AI does not know the answer to a question, it truthfully says it does not know.",
+                "Ensure the video caption's main theme is about a natural disaster and the damages",
+                "Ensure you provide information about damaged infrastructure mainly such as buildings, debris, highways",
+            ]
+        )
+        template_for_llm = """
 
-Current conversation:
-{history}
+        Entities:
+        {entities}
 
-Human: {input}
-AI Assistant:"""
-PROMPT = PromptTemplate(
-    input_variables=["entities", "history", "input"],
-    template=system_message + template,
-)
-conversation = ConversationChain(
-    llm=model,
-    memory=ConversationEntityMemory(llm=model),
-    prompt=PROMPT,
-    verbose=True,
-)
+        Current conversation:
+        {history}
+
+        Human: {input}
+        AI Assistant:"""
+        PROMPT = PromptTemplate(
+            input_variables=["entities", "history", "input"],
+            template=system_message + template_for_llm,
+        )
+
+        self.conversation = ConversationChain(
+            llm=model,
+            memory=ConversationEntityMemory(llm=model),
+            prompt=PROMPT,
+            verbose=verbose,
+        )
+
+        self.template = (
+            lambda start, end, description: f"Timestamp: {start}-{end} seconds. Description: {description}"
+        )
+
+        self.context_established = False
+
+    def establish_context(self, captions):
+        # establish context
+        user_input = "\n".join(
+            [
+                "I am going to provide a summary of a video where a natural disaster occurred. The 'Timestamp' represents what part of the video the description is related to. The 'Description' is a summary of what happened in that interval of time.",
+                *[
+                    self.template(start, end, *description)
+                    for start, end, description in captions
+                ],
+            ]
+        )
+        follow_up = "\nDon't respond. Just use this information for context when I ask the next question"
+        res = self.conversation.predict(input=user_input + follow_up)
+        self.establish_context = True
+
+    def get_video_caption_generator(self):
+        return self.video_caption_generator
+
+    def get_captions_from_video(self, video_path):
+        captions = self.video_caption_generator.get_captions_and_intervals_in_seconds(
+            video_path=video_path,
+        )
+        return captions
+
+    def ask_question(self, question):
+        assert (
+            self.establish_context
+        ), "Context has not been established. Pass captions with start and end timestamps into establish_context() first."
+
+        res = self.conversation.predict(input=question)
+        print(res)
 
 
-template = (
-    lambda start, end, description: f"Timestamp: {start}-{end} seconds. Description: {description}"
-)
+def get_paths_to_videos(file_path):
+    assert file_path, "file_path is required"
 
-template(0, 10, "a tree has fallen down and is obstructed by a car.")
-# establish context
-user_input = "\n".join(
-    [
-        "I am going to provide a summary of a video where a natural disaster occurred. The 'Timestamp' represents what part of the video the description is related to. The 'Description' is a summary of what happened in that interval of time.",
-        "Timestamp: 0-10 seconds. Description: a tree has fallen down and is obstructed by a car.",
-        "Timestamp: 10-20 seconds. Description: a building is collapsing and a fire is spreading.",
-        "Timestamp: 20-30 seconds. Description: an emergency vehicle is driving down the road.",
-    ]
-)
-follow_up = "\nDon't respond. Just use this information for context when I ask the next question"
-print(user_input)
-res = conversation.predict(input=user_input + follow_up)
-print(res)
+    paths = []
+    for root, dirs, files in os.walk(file_path):
+        if not files:
+            continue
+        for file in files:
+            paths.append(os.path.join(root, file))
+    return paths
 
-question = "Did a tree fall down at some point in the video?"
 
-res = conversation.predict(input=question)
-print(res)
+video_paths = get_paths_to_videos("./dataset/full_video_examples")
+# "./dataset/full_video_examples/volcanic_eruption/VBTAcACmcgo.mp4"
 
-question = "What happened in this video?"
-res = conversation.predict(input=question)
-print(res)
+video_paths[0]
+chat = Llama3Chat(video_caption_generator=GitCaptioner(), verbose=False)
+captions = chat.get_captions_from_video(video_path=video_paths[0])
+chat.establish_context(captions=captions)
+
+chat.ask_question(question="Did a tree fall down at some point in the video?")
+chat.ask_question(question="What was the impact of the eruption?")
+chat.ask_question(question="What happened in this video?")
