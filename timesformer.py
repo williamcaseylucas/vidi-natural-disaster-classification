@@ -5,78 +5,32 @@ TO TRAIN A CLASSIFIER TO DETERMINE THE TYPE OF NATURAL DISASTER IN A VIDEO
 
 """
 
-import av
-import torch
 import numpy as np
+import cv2, os
+from PIL import Image
+from torch import nn
+import torch
+from torch.utils.data import Dataset
+from transformers import (
+    AutoImageProcessor,
+    TimesformerForVideoClassification,
+    TrainingArguments,
+    Trainer,
+)
+from utils import get_wholistic_df
+from torchinfo import summary
 
-from transformers import AutoImageProcessor, TimesformerForVideoClassification
-from huggingface_hub import hf_hub_download
+device = torch.device("mps")
 
 np.random.seed(0)
 
-
-def read_video_pyav(container, indices):
-    """
-    Decode the video with PyAV decoder.
-    Args:
-        container (`av.container.input.InputContainer`): PyAV container.
-        indices (`List[int]`): List of frame indices to decode.
-    Returns:
-        result (np.ndarray): np array of decoded frames of shape (num_frames, height, width, 3).
-    """
-    frames = []
-    container.seek(0)
-    start_index = indices[0]
-    end_index = indices[-1]
-    for i, frame in enumerate(container.decode(video=0)):
-        if i > end_index:
-            break
-        if i >= start_index and i in indices:
-            frames.append(frame)
-    return np.stack([x.to_ndarray(format="rgb24") for x in frames])
-
-
-def sample_frame_indices(clip_len, frame_sample_rate, seg_len):
-    """
-    Sample a given number of frame indices from the video.
-    Args:
-        clip_len (`int`): Total number of frames to sample.
-        frame_sample_rate (`int`): Sample every n-th frame.
-        seg_len (`int`): Maximum allowed index of sample's last frame.
-    Returns:
-        indices (`List[int]`): List of sampled frame indices
-    """
-    converted_len = int(clip_len * frame_sample_rate)
-    end_idx = np.random.randint(converted_len, seg_len)
-    start_idx = end_idx - converted_len
-    indices = np.linspace(start_idx, end_idx, num=clip_len)
-    indices = np.clip(indices, start_idx, end_idx - 1).astype(np.int64)
-    return indices
-
-
-# video clip consists of 300 frames (10 seconds at 30 FPS)
-file_path = hf_hub_download(
-    repo_id="nielsr/video-demo", filename="eating_spaghetti.mp4", repo_type="dataset"
-)
-container = av.open(file_path)
-
-# sample 8 frames
-indices = sample_frame_indices(
-    clip_len=8, frame_sample_rate=1, seg_len=container.streams.video[0].frames
-)
-video = read_video_pyav(container, indices)
-
 image_processor = AutoImageProcessor.from_pretrained(
-    "MCG-NJU/videomae-base-finetuned-kinetics"
+    "MCG-NJU/videomae-base-finetuned-kinetics", device=device
 )
 model = TimesformerForVideoClassification.from_pretrained(
     "facebook/timesformer-base-finetuned-k400"
-)
+).to(device)
 
-from torch import nn
-import torch
-import os
-from torchinfo import summary
 
 classes_len = len(os.listdir("./dataset/videos"))
 
@@ -93,18 +47,182 @@ summary(
 )
 
 
-# get data loader for each
+def get_loader(
+    df,
+    transform,
+    batch_size=32,
+    num_workers=9,
+    shuffle=True,
+    pin_memory=True,
+):
 
-optimizer = torch.optim.Adam(params=model.parameters(), lr=1e-3)
-loss = torch.nn.CrossEntropyLoss()
+    dataset = VIDIDataset(
+        df=df,
+        transform=transform,
+    )
 
-# -------------------
-inputs = image_processor(list(video), return_tensors="pt")["pixel_values"]
-inputs.shape  # torch.Size([1, 8, 3, 224, 224])
+    train_set, test_set = torch.utils.data.random_split(dataset, [0.8, 0.2])
+    # train_loader = DataLoader(
+    #     dataset=train_set,
+    #     batch_size=batch_size,
+    #     num_workers=num_workers,
+    #     shuffle=shuffle,
+    #     pin_memory=pin_memory,
+    #     collate_fn=MyColate(),
+    # )
+    # test_loader = DataLoader(
+    #     dataset=test_set,
+    #     batch_size=batch_size,
+    #     num_workers=num_workers,
+    #     shuffle=shuffle,
+    #     pin_memory=pin_memory,
+    #     collate_fn=MyColate(),
+    # )
+
+    return train_set, test_set
+
+
+class MyColate:
+    def __init__(self):
+        pass
+
+    def __call__(self, batch):
+        video_frames = [item[0].unsqueeze(0) for item in batch]
+        torch_video = torch.cat(video_frames, dim=0)
+        labels = torch.cat([item[1].unsqueeze(0) for item in batch], dim=0)
+
+        return {"pixel_values": torch_video, "labels": labels}
+        # return torch_video, labels
+
+
+class VIDIDataset(Dataset):
+
+    def __init__(self, df, transform=None, sample_rate=8):
+        self.transform = transform
+        self.sample_rate = sample_rate
+        partial_path = f"./dataset/videos"
+
+        self.labels = os.listdir(partial_path)
+        self.label_to_ids = {
+            label: {
+                path.split(".")[0].split("=")[0]: os.path.join(
+                    partial_path, label, path
+                )
+                for path in os.listdir(f"./dataset/videos/{label}")
+            }
+            for label in self.labels
+        }
+        self.label_to_idx = {label: i for i, label in enumerate(self.labels)}
+        self.idx_to_label = {v: k for k, v in self.label_to_idx.items()}
+
+        indexes = df.apply(
+            lambda x: x["youtube_id"]
+            in self.label_to_ids[x["label"].replace(" ", "_").lower()],
+            axis=1,
+        )
+        self.df = df[indexes].reset_index(
+            drop=True
+        )  # filter out the videos that are not in the dataset
+
+        self.df_labels = self.df["label"]
+        self.ids = self.df["youtube_id"]
+
+    def __len__(self):
+        return len(self.labels)
+
+    def __getitem__(self, idx):
+        video_id = self.ids[idx]
+        df_label = self.df_labels[idx]
+
+        mapped_label = df_label.replace(" ", "_").lower()
+        if video_id not in self.label_to_ids[mapped_label]:
+            return
+
+        video_path = self.label_to_ids[mapped_label][video_id]
+        video_frames = self.read_frames(video_path, self.sample_rate)
+
+        if self.transform:
+            video_frames = self.transform(list(video_frames), return_tensors="pt")[
+                "pixel_values"
+            ]
+
+        return video_frames.squeeze(0), torch.tensor(self.label_to_idx[mapped_label])
+
+    def read_frames(self, video_path, sample_rate):
+        cap = cv2.VideoCapture(video_path)
+        frames = []
+        while True:
+            # Capture frame-by-frame
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            color_coverted_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frames.append(color_coverted_frame)
+        cap.release()
+        frames = np.array(frames)
+        indicies = np.linspace(0, len(frames) - 1, num=sample_rate).astype(np.int8)
+        return [Image.fromarray(f) for f in frames[indicies]]
+
+
+df = get_wholistic_df()
+labels = os.listdir("./dataset/videos")
+label_to_idx = {label: i for i, label in enumerate(labels)}
+idx_to_label = {v: k for k, v in label_to_idx.items()}
+
+train_set, test_set = get_loader(df=df, transform=image_processor)
+
+training_args = TrainingArguments(
+    output_dir="./timesformer_training/results",
+    num_train_epochs=5,
+    per_device_train_batch_size=32,
+    per_device_eval_batch_size=32,
+    warmup_steps=500,
+    weight_decay=0.01,
+    logging_dir="./timesformer_training/logs",
+    learning_rate=1e-4,
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    save_total_limit=2,
+)
+
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=train_set,
+    eval_dataset=test_set,
+    data_collator=MyColate(),
+)
+
+trainer.train()
+
+model = TimesformerForVideoClassification.from_pretrained(
+    "./timesformer_training/results/checkpoint-10"
+).to(device)
+
+model.eval()
+
+video, label = test_set[0]
+video.shape
+idx_to_label[label.item()]
 with torch.no_grad():
-    outputs = model(**inputs)
-    logits = outputs.logits
+    res = model(**{"pixel_values": video.unsqueeze(0).to(device)})
+    res.logits.shape
 
-# model predicts one of the 400 Kinetics-400 classes
-predicted_label = logits.argmax(-1).item()
-print(model.config.id2label[predicted_label])
+# -----------------
+
+# from transformers import AutoImageProcessor, TimesformerForVideoClassification
+# import numpy as np
+# import torch
+
+# video = list(np.ones((8, 3, 224, 224)))
+
+# processor = AutoImageProcessor.from_pretrained(
+#     "facebook/timesformer-base-finetuned-k400"
+# )
+# model = TimesformerForVideoClassification.from_pretrained(
+#     "facebook/timesformer-base-finetuned-k400"
+# )
+
+# inputs = processor(video, return_tensors="pt")
+# inputs.keys()
