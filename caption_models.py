@@ -11,6 +11,14 @@ from tqdm import tqdm
 from extract_video_frames import get_frames_from_video
 from abc import ABC
 
+from enum import Enum
+
+
+class VideoCaptionType(Enum):
+    # .name = .value
+    GIT = "git"
+    TIMESFORMER = "timesformer"
+
 
 class Captioner(ABC):
     def __init__(self):

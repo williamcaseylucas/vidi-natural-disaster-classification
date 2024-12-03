@@ -13,17 +13,10 @@ from langchain.memory import ConversationEntityMemory
 from langchain.memory.prompt import ENTITY_MEMORY_CONVERSATION_TEMPLATE
 from tqdm import tqdm
 
-from caption_models import GitCaptioner, TimesformerCaptioner
+from caption_models import GitCaptioner, TimesformerCaptioner, VideoCaptionType
 import os
 from ipywidgets import Video
 from IPython.display import display
-from enum import Enum
-
-
-class VideoCaptionType(Enum):
-    # .name = .value
-    GIT = "git"
-    TIMESFORMER = "timesformer"
 
 
 def text_generation_example():
@@ -129,7 +122,7 @@ def use_entity_memory_with_custom_system_template(
 
 
 class Llama3Chat:
-    def __init__(self, video_caption_generator, verbose=False):
+    def __init__(self, video_caption_generator, verbose=False, natural_disaster=""):
         match video_caption_generator.value:
             case "git":
                 video_caption_generator = GitCaptioner()
@@ -148,6 +141,12 @@ class Llama3Chat:
                 "The following is a friendly conversation between a human and an AI. The AI is talkative and provides lots of specific details from its context. If the AI does not know the answer to a question, it truthfully says it does not know.",
                 "Ensure the video caption's main theme is about a natural disaster and the damages",
                 "Ensure you provide information about damaged infrastructure mainly such as buildings, debris, highways",
+                (
+                    ""
+                    if not natural_disaster
+                    else "The video is depicting the following natural disaster: "
+                    + natural_disaster
+                ),
             ]
         )
         template_for_llm = """
@@ -226,16 +225,22 @@ def get_paths_to_videos(file_path):
 
 # load video
 video_paths = get_paths_to_videos("./dataset/full_video_examples")
-video_path = video_paths[1]
+video_path = video_paths[0]
 if video_path.split(".")[-1] == "mp4":
     demo = Video.from_file(video_path)  # to view video
     display(demo)
+natural_disaster = video_path.split("/")[-2]
 
-
-chat = Llama3Chat(video_caption_generator=VideoCaptionType.GIT, verbose=False)
+chat = Llama3Chat(
+    video_caption_generator=VideoCaptionType.GIT,
+    verbose=False,
+    natural_disaster=natural_disaster,
+)
 captions = chat.get_captions_from_video(video_path=video_path, interval_of_window=5)
 chat.establish_context(captions=captions)
+
 
 chat.ask_question(question="Did a tree fall down at some point in the video?")
 chat.ask_question(question="What was the impact of the eruption?")
 chat.ask_question(question="What happened in this video?")
+chat.ask_question(question="")

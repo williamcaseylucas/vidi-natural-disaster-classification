@@ -1,3 +1,10 @@
+"""
+
+TO TRAIN A CLASSIFIER TO DETERMINE THE TYPE OF NATURAL DISASTER IN A VIDEO
+
+
+"""
+
 import av
 import torch
 import numpy as np
@@ -53,8 +60,6 @@ file_path = hf_hub_download(
 )
 container = av.open(file_path)
 
-video_file = ''
-
 # sample 8 frames
 indices = sample_frame_indices(
     clip_len=8, frame_sample_rate=1, seg_len=container.streams.video[0].frames
@@ -68,8 +73,34 @@ model = TimesformerForVideoClassification.from_pretrained(
     "facebook/timesformer-base-finetuned-k400"
 )
 
-inputs = image_processor(list(video), return_tensors="pt")
+from torch import nn
+import torch
+import os
+from torchinfo import summary
 
+classes_len = len(os.listdir("./dataset/videos"))
+
+for param in model.parameters():
+    param.requires_grad = False
+model.classifier = nn.Linear(model.classifier.in_features, classes_len)
+
+summary(
+    model,
+    input_size=(1, 8, 3, 224, 224),
+    col_names=["input_size", "output_size", "num_params", "trainable"],
+    col_width=20,
+    row_settings=["var_names"],
+)
+
+
+# get data loader for each
+
+optimizer = torch.optim.Adam(params=model.parameters(), lr=1e-3)
+loss = torch.nn.CrossEntropyLoss()
+
+# -------------------
+inputs = image_processor(list(video), return_tensors="pt")["pixel_values"]
+inputs.shape  # torch.Size([1, 8, 3, 224, 224])
 with torch.no_grad():
     outputs = model(**inputs)
     logits = outputs.logits
