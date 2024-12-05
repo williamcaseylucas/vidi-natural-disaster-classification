@@ -209,13 +209,15 @@ class Llama3Chat:
         )
         return captions
 
-    def ask_question(self, question):
+    def ask_question(self, question, verbose=True):
         assert (
             self.establish_context
         ), "Context has not been established. Pass captions with start and end timestamps into establish_context() first."
 
         res = self.conversation.predict(input=question)
-        print(res)
+        if verbose:
+            print(res)
+        return res
 
 
 def get_paths_to_videos(file_path):
@@ -247,9 +249,16 @@ chat = Llama3Chat(
 captions = chat.get_captions_from_video(video_path=video_path, interval_of_window=5)
 chat.establish_context(captions=captions)
 
-chat.ask_question("Introduce yourself.")
+print("---------------------------\n\n\n")
+
+chat.ask_question(
+    "Introduce yourself and suggest questions the user can ask you related to the context you've been fed so far."
+)
 while True:
+    print("---------------------------")
     user_input = input(">")
-    if user_input == "exit" or "q" or "quit":
+    print("Your question: ", user_input)
+    if user_input in ["exit", "q", "quit"]:
         break
-    chat.ask_question(question=user_input)
+    res = chat.ask_question(question=user_input)
+    print("AI response: ", res)
