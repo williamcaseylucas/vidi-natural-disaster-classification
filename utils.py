@@ -4,6 +4,10 @@ import json, os
 import pandas as pd
 from tqdm.auto import tqdm
 import concurrent.futures
+import cv2
+from PIL import Image
+import numpy as np
+import torch
 
 DATA_DIR = "./dataset/data"
 VIDEO_DIR = "./dataset/videos"
@@ -129,3 +133,47 @@ def get_info_from_url(URL, desired_resolution="720"):
                 f"Format ID: {format['format_id']} | Resolution: {format.get('height', 'N/A')} | Extension: {format['ext']} | URL: {format['url']}"
             )
         print(json.dumps(ydl.sanitize_info(info)))
+
+
+def write_frames(root_dir, transform, sample_rate=8):
+
+    def read_frames(video_path):
+        cap = cv2.VideoCapture(video_path)
+        frames = []
+        while True:
+            # Capture frame-by-frame
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            color_coverted_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frames.append(color_coverted_frame)
+        cap.release()
+        frames = np.array(frames)
+        indicies = np.linspace(0, len(frames) - 1, num=sample_rate).astype(np.int8)
+        return [Image.fromarray(f) for f in frames[indicies]]
+
+    labels = os.listdir(root_dir)
+    label_to_ids = {
+        label: {
+            path.split(".")[0]: os.path.join(root_dir, label, path)
+            for path in os.listdir(f"./dataset/videos/{label}")
+        }
+        for label in labels
+    }
+
+    new_path = "./dataset/videos_processed"
+    for label in tqdm(labels):
+        for id, path in label_to_ids[label].items():
+            file_name = os.path.join(new_path, label, f"{id}.pt")
+            if not os.path.exists(os.path.join(new_path, label)):
+                os.makedirs(os.path.join(new_path, label))
+
+            if os.path.exists(file_name):
+                continue
+
+            frames = read_frames(path)
+            frames = transform(list(frames), return_tensors="pt")[
+                "pixel_values"
+            ].squeeze(0)
+            torch.save(frames, file_name)

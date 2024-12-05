@@ -122,12 +122,18 @@ def use_entity_memory_with_custom_system_template(
 
 
 class Llama3Chat:
-    def __init__(self, video_caption_generator, verbose=False, natural_disaster=""):
+    def __init__(
+        self, video_caption_generator, with_classification=False, verbose=False
+    ):
         match video_caption_generator.value:
             case "git":
-                video_caption_generator = GitCaptioner()
+                video_caption_generator = GitCaptioner(
+                    with_classification=with_classification
+                )
             case "timesformer":
-                video_caption_generator = TimesformerCaptioner()
+                video_caption_generator = TimesformerCaptioner(
+                    with_classification=with_classification
+                )
             case _:
                 raise ValueError(
                     "video_caption_generator must be one of ['git', 'timesformer']"
@@ -141,12 +147,6 @@ class Llama3Chat:
                 "The following is a friendly conversation between a human and an AI. The AI is talkative and provides lots of specific details from its context. If the AI does not know the answer to a question, it truthfully says it does not know.",
                 "Ensure the video caption's main theme is about a natural disaster and the damages",
                 "Ensure you provide information about damaged infrastructure mainly such as buildings, debris, highways",
-                (
-                    ""
-                    if not natural_disaster
-                    else "The video is depicting the following natural disaster: "
-                    + natural_disaster
-                ),
             ]
         )
         template_for_llm = """
@@ -172,7 +172,7 @@ class Llama3Chat:
         )
 
         self.template = (
-            lambda start, end, description: f"Timestamp: {start}-{end} seconds. Description: {description}"
+            lambda start, end, caption, classification: f"Timestamp: {start}-{end} seconds. Description: {caption}{' Classification: ' + classification if classification else ''}"
         )
 
         self.context_established = False
@@ -181,15 +181,22 @@ class Llama3Chat:
         # establish context
         user_input = "\n".join(
             [
-                "I am going to provide a summary of a video where a natural disaster occurred. The 'Timestamp' represents what part of the video the description is related to. The 'Description' is a summary of what happened in that interval of time.",
+                "I am going to provide a summary of a video where a natural disaster occurred. The 'Timestamp' represents what part of the video the description is related to. The 'Description' is a summary of what happened in that interval of time. The 'Classification' is a predicted category of what type of disaster may have occurred. Keep in mind sometimes the 'Classification' will not be accurate. It is provided to help provide additional context.",
                 *[
-                    self.template(start, end, *description)
-                    for start, end, description in captions
+                    self.template(
+                        interval["start"],
+                        interval["end"],
+                        *interval["caption"],
+                        interval["classification"],
+                    )
+                    for interval in captions
                 ],
             ]
         )
         follow_up = "\nDon't respond. Just use this information for context when I ask the next question"
-        res = self.conversation.predict(input=user_input + follow_up)
+        res = self.conversation.predict(
+            input=user_input + follow_up
+        )  # can see res but don't need to
         self.establish_context = True
 
     def get_video_caption_generator(self):
@@ -225,22 +232,24 @@ def get_paths_to_videos(file_path):
 
 # load video
 video_paths = get_paths_to_videos("./dataset/full_video_examples")
-video_path = video_paths[0]
+video_path = video_paths[1]
 if video_path.split(".")[-1] == "mp4":
     demo = Video.from_file(video_path)  # to view video
     display(demo)
 natural_disaster = video_path.split("/")[-2]
 
+print("natural_disaster", natural_disaster)
 chat = Llama3Chat(
-    video_caption_generator=VideoCaptionType.GIT,
+    video_caption_generator=VideoCaptionType.TIMESFORMER,
     verbose=False,
-    natural_disaster=natural_disaster,
+    with_classification=True,
 )
 captions = chat.get_captions_from_video(video_path=video_path, interval_of_window=5)
 chat.establish_context(captions=captions)
 
-
-chat.ask_question(question="Did a tree fall down at some point in the video?")
-chat.ask_question(question="What was the impact of the eruption?")
-chat.ask_question(question="What happened in this video?")
-chat.ask_question(question="")
+chat.ask_question("Introduce yourself.")
+while True:
+    user_input = input(">")
+    if user_input == "exit" or "q" or "quit":
+        break
+    chat.ask_question(question=user_input)

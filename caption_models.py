@@ -14,16 +14,61 @@ from abc import ABC
 from enum import Enum
 
 
+import torch
+from transformers import AutoImageProcessor, TimesformerForVideoClassification, logging
+import json
+
+
 class VideoCaptionType(Enum):
     # .name = .value
     GIT = "git"
     TIMESFORMER = "timesformer"
 
 
+device = torch.device("mps")
+
+logging.set_verbosity_error()
+
+
+class TimesFormerClassifier:
+    def __init__(self, pretrained_model_dir, device):
+        # Don't need to use this since frames will already be processed
+        self.image_processor = AutoImageProcessor.from_pretrained(
+            "MCG-NJU/videomae-base-finetuned-kinetics", device=device
+        )
+
+        # VIDI dataset has 43 classifications
+        self.model = TimesformerForVideoClassification.from_pretrained(
+            pretrained_model_dir,
+            num_labels=43,
+        ).to(device)
+
+        with open("./dataset/labels.json", "r") as f:
+            labels = json.load(f)
+            self.labels = list(labels["label"].values())
+
+        self.label_to_idx = {label: i for i, label in enumerate(self.labels)}
+        self.idx_to_label = {v: k for k, v in self.label_to_idx.items()}
+
+    def get_predictions(self, frames):
+        logits = self.model(frames).logits
+        predictions = logits.argmax(-1)
+
+        return [self.idx_to_label[pred.item()] for pred in predictions]
+
+
 class Captioner(ABC):
-    def __init__(self):
+    def __init__(self, with_classification=False):
         self.device = torch.device("mps")
         self.tokenizer = None
+        self.classifier = None
+        self.with_classification = with_classification
+
+        if self.with_classification:
+            self.classifier = TimesFormerClassifier(
+                pretrained_model_dir="./timesformer_training/results/checkpoint-946",
+                device=self.device,
+            )
 
     def get_extracted_frames(self, video_path, interval_of_window=10):
         video_frames = get_frames_from_video(
@@ -78,16 +123,28 @@ class Captioner(ABC):
 
     def get_captions_and_intervals_in_seconds(
         self,
-        interval_of_window,
         video_path="./dataset/full_video_examples/volcanic_eruption/VBTAcACmcgo.mp4",
+        interval_of_window=10,
     ):
         frames = self.get_extracted_frames(
             video_path=video_path, interval_of_window=interval_of_window
         )
+        classifications = None
         captions = []
         start, end = 0, interval_of_window
-        for token in tqdm(self.get_tokens(frames), total=len(frames), desc="Captions"):
-            captions.append((start, end, self.decode_caption(token)))
+        for idx, token in enumerate(
+            tqdm(self.get_tokens(frames), total=len(frames), desc="Captions")
+        ):
+            if self.with_classification:
+                classifications = self.classifier.get_predictions(frames)
+            captions.append(
+                {
+                    "start": start,
+                    "end": end,
+                    "caption": self.decode_caption(token),
+                    "classification": classifications[idx],
+                }
+            )
             start += interval_of_window
             end += interval_of_window
 
@@ -95,8 +152,8 @@ class Captioner(ABC):
 
 
 class GitCaptioner(Captioner):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, with_classification):
+        super().__init__(with_classification=with_classification)
 
         self.processor = AutoProcessor.from_pretrained(
             "microsoft/git-base-vatex", device=self.device
@@ -112,8 +169,9 @@ class GitCaptioner(Captioner):
 
 
 class TimesformerCaptioner(Captioner):
-    def __init__(self):
-        super().__init__()
+
+    def __init__(self, with_classification):
+        super().__init__(with_classification=with_classification)
         # load pretrained processor, tokenizer, and model
         self.processor = AutoImageProcessor.from_pretrained(
             "MCG-NJU/videomae-base", device=self.device
