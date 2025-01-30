@@ -8,7 +8,7 @@ from transformers import (
 )
 import torch
 from tqdm import tqdm
-from extract_video_frames import get_frames_from_video
+from youtube_download_files.extract_video_frames import get_frames_from_video
 from abc import ABC
 
 from enum import Enum
@@ -37,7 +37,7 @@ class TimesFormerClassifier:
             "MCG-NJU/videomae-base-finetuned-kinetics", device=device
         )
 
-        # VIDI dataset has 43 classifications
+        # VIDI dataset has 43 classifications, use 8 frames
         self.model = TimesformerForVideoClassification.from_pretrained(
             pretrained_model_dir,
             num_labels=43,
@@ -70,26 +70,20 @@ class Captioner(ABC):
                 device=self.device,
             )
 
-    def get_extracted_frames(self, video_path, interval_of_window=10):
-        video_frames = get_frames_from_video(
-            file_path=video_path,
-            interval_of_window=interval_of_window,
-            frame_sample_rate=self.clip_len,
-        )
-
-        video_frames.shape  # 29, 6, 3, 720, 1280
-        batch_dim, frames = video_frames.shape[0:2]
+    def get_extracted_frames(self, frames):
+        frames.shape  # 29, 6, 3, 720, 1280
+        batch_dim, num_frames = frames.shape[0:2]
         pixel_values = (
             self.processor(
-                images=list(
-                    video_frames.reshape(batch_dim * frames, *video_frames.shape[2:])
-                ),
+                images=list(frames.reshape(batch_dim * num_frames, *frames.shape[2:])),
                 return_tensors="pt",
             )
             .pixel_values[0]
             .to(self.device)
         )  # torch.Size([1, 6, 3, 224, 224])
-        pixel_values = pixel_values.reshape(batch_dim, frames, *pixel_values.shape[1:])
+        pixel_values = pixel_values.reshape(
+            batch_dim, num_frames, *pixel_values.shape[1:]
+        )
         return pixel_values
 
     def get_tokens(
@@ -119,25 +113,52 @@ class Captioner(ABC):
                 generated_ids, skip_special_tokens=True
             )
 
-        return caption
+        return caption[0]
 
     def get_captions_and_intervals_in_seconds(
         self,
         video_path="./dataset/full_video_examples/volcanic_eruption/VBTAcACmcgo.mp4",
         interval_of_window=10,
     ):
-        frames = self.get_extracted_frames(
-            video_path=video_path, interval_of_window=interval_of_window
+        video_frames_caption, video_frames_classification = get_frames_from_video(
+            file_path=video_path,
+            interval_of_window=interval_of_window,
+            frame_sample_rate_for_caption=self.clip_len,
+            frame_sample_rate_for_classification=8,
+        )
+        (
+            extracted_video_frames_for_captions,
+            extracted_video_frames_for_classification,
+        ) = self.get_extracted_frames(video_frames_caption), self.get_extracted_frames(
+            video_frames_classification
         )
         classifications = None
-        captions = []
+        intervals = []
         start, end = 0, interval_of_window
+
+        print(
+            "extracted_video_frames_for_captions.shape",
+            extracted_video_frames_for_captions.shape,
+        )
+        print(
+            "extracted_video_frames_for_classification.shape",
+            extracted_video_frames_for_classification.shape,
+        )
+
+        # caption_frames =
         for idx, token in enumerate(
-            tqdm(self.get_tokens(frames), total=len(frames), desc="Captions")
+            tqdm(
+                self.get_tokens(extracted_video_frames_for_captions),
+                total=len(extracted_video_frames_for_captions),
+                desc="Caption Generation",
+            )
         ):
             if self.with_classification:
-                classifications = self.classifier.get_predictions(frames)
-            captions.append(
+                # If using timesformer classifier, this needs to be 8 frames always per window
+                classifications = self.classifier.get_predictions(
+                    extracted_video_frames_for_classification
+                )
+            intervals.append(
                 {
                     "start": start,
                     "end": end,
@@ -148,7 +169,7 @@ class Captioner(ABC):
             start += interval_of_window
             end += interval_of_window
 
-        return captions
+        return intervals
 
 
 class GitCaptioner(Captioner):

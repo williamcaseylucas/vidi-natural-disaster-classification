@@ -1,13 +1,22 @@
+# MAIN ENTRYPOINT
+
 # https://huggingface.co/docs/transformers/en/tasks/question_answering
+
+import warnings
+
+warnings.filterwarnings("ignore")
+
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_ollama.llms import OllamaLLM  # text
 
 # from langchain_ollama import ChatOllama  # for chat
 # from langchain.schema import SystemMessage, HumanMessage, AIMessage
+from langchain_core.runnables.history import (
+    RunnableWithMessageHistory,
+)  # may want to swap this out with ConversationChain but yuck
 from langchain.chains import ConversationChain
 from langchain.memory import ConversationBufferMemory
-
 from langchain_core.prompts.prompt import PromptTemplate
 from langchain.memory import ConversationEntityMemory
 from langchain.memory.prompt import ENTITY_MEMORY_CONVERSATION_TEMPLATE
@@ -127,10 +136,12 @@ class Llama3Chat:
     ):
         match video_caption_generator.value:
             case "git":
+                # max frame window is 6
                 video_caption_generator = GitCaptioner(
                     with_classification=with_classification
                 )
             case "timesformer":
+                # max frame window is 8
                 video_caption_generator = TimesformerCaptioner(
                     with_classification=with_classification
                 )
@@ -144,9 +155,12 @@ class Llama3Chat:
 
         system_message = " ".join(
             [
-                "The following is a friendly conversation between a human and an AI. The AI is talkative and provides lots of specific details from its context. If the AI does not know the answer to a question, it truthfully says it does not know.",
-                "Ensure the video caption's main theme is about a natural disaster and the damages",
-                "Ensure you provide information about damaged infrastructure mainly such as buildings, debris, highways",
+                "Your job is to answer questions related to a central natural disaster that happened. Whatever natural disaster occurs the most often, assume that is the central theme. Answer questions related to the context you are provided.",
+                "If you think things are random and not relevant, do not mention them.",
+                "I am going to provide a collection of starting times, ending times, summaries of that interval of time, and a classificaition prediction of what happened in that interval of time. The 'Timestamp' represents what part of the video the description is related to. The 'Description' is a summary of what happened in that interval of time. Keep in mind that this 'Description' may not always be accurate so try to do your best to make sense of it. The 'Classification' is a predicted category of what type of disaster may have occurred. Keep in mind sometimes the 'Classification' will not always be accurate.",
+                "Be sure to note if you see information related to debris or damage to infrastructure such as buildings, highways, etc.",
+                "All of the information you will be provided is going to be related to a video where a natural disaster has occurred so it is your job to try and be as helpful as possible and to make connections between the information you recieve and provide to the user. Some of the captions may be incorrect so if some of them don't seem to follow a consistent flow, ignore them. Also use your reasoning to determine when classifications are incorrect. For example, if a volanic eruption is described as a nuclear explosion, assume the classification is incorrect.",
+                "Do not be overly wordy unless you are asked to. Be conversational but answer the question directly.",
             ]
         )
         template_for_llm = """
@@ -181,22 +195,21 @@ class Llama3Chat:
         # establish context
         user_input = "\n".join(
             [
-                "I am going to provide a summary of a video where a natural disaster occurred. The 'Timestamp' represents what part of the video the description is related to. The 'Description' is a summary of what happened in that interval of time. The 'Classification' is a predicted category of what type of disaster may have occurred. Keep in mind sometimes the 'Classification' will not be accurate. It is provided to help provide additional context.",
-                *[
-                    self.template(
-                        interval["start"],
-                        interval["end"],
-                        *interval["caption"],
-                        interval["classification"],
-                    )
-                    for interval in captions
-                ],
-            ]
+                self.template(
+                    interval["start"],
+                    interval["end"],
+                    interval["caption"],
+                    interval["classification"],
+                )
+                for interval in captions
+            ],
         )
-        follow_up = "\nDon't respond. Just use this information for context when I ask the next question"
+        follow_up = "\nBased on this information, introduce yourself briefly and give a brief summary of the video but do not include information that seems like it could be incorrect. Keep in mind these caption and classifications are predictions and not ground truth values. Then show the user a couple of sample questions the user can ask you."
         res = self.conversation.predict(
             input=user_input + follow_up
         )  # can see res but don't need to
+        print("-------------[AI]-------------")
+        print(res)
         self.establish_context = True
 
     def get_video_caption_generator(self):
@@ -232,33 +245,36 @@ def get_paths_to_videos(file_path):
     return paths
 
 
-# load video
-video_paths = get_paths_to_videos("./dataset/full_video_examples")
-video_path = video_paths[1]
-if video_path.split(".")[-1] == "mp4":
-    demo = Video.from_file(video_path)  # to view video
-    display(demo)
+# load video, don't include .DS_Store
+video_paths = list(
+    filter(
+        lambda path: path.split(".")[-1] != "DS_Store",
+        get_paths_to_videos("./dataset/full_video_examples"),
+    )
+)
+video_path = video_paths[2]
+# if video_path.split(".")[-1] == "mp4":
+#     demo = Video.from_file(video_path)  # to view video
+#     display(demo)
 natural_disaster = video_path.split("/")[-2]
 
-print("natural_disaster", natural_disaster)
 chat = Llama3Chat(
-    video_caption_generator=VideoCaptionType.TIMESFORMER,
+    video_caption_generator=VideoCaptionType.GIT,
     verbose=False,
     with_classification=True,
 )
-captions = chat.get_captions_from_video(video_path=video_path, interval_of_window=5)
+print("\n\n")
+print("Natural disaster label from video: ", natural_disaster)
+print("Video path: ", video_path)
+captions = chat.get_captions_from_video(video_path=video_path, interval_of_window=10)
 chat.establish_context(captions=captions)
 
-print("---------------------------\n\n\n")
-
-chat.ask_question(
-    "Introduce yourself and suggest questions the user can ask you related to the context you've been fed so far."
-)
 while True:
-    print("---------------------------")
-    user_input = input(">")
-    print("Your question: ", user_input)
+    print("-------------[User]-------------")
+    print("[type q, quit, or exit to exit terminal]")
+    user_input = input("> ")
     if user_input in ["exit", "q", "quit"]:
         break
-    res = chat.ask_question(question=user_input)
-    print("AI response: ", res)
+    print("")
+    print("-------------[AI]-------------")
+    chat.ask_question(question=user_input)

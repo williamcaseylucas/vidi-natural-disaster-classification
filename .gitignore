@@ -1,7 +1,6 @@
 dataset/videos/*
 dataset/videos_processed/*
 dataset/full_video_examples/*
-.env
-cookies.txt
 __pycache__
 timesformer_training/results/*
+my_readme.md

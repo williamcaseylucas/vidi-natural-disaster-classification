@@ -17,7 +17,7 @@ from transformers import (
     TrainingArguments,
     Trainer,
 )
-from utils import get_wholistic_df, write_frames
+from youtube_download_files.utils import get_wholistic_df, write_frames
 from torchinfo import summary
 import evaluate
 
@@ -33,7 +33,7 @@ model = TimesformerForVideoClassification.from_pretrained(
     "facebook/timesformer-base-finetuned-k400",
 ).to(device)
 
-
+# NOTE: Run this to process files into .pt frames for faster loading
 # write_frames(root_dir="./dataset/videos", transform=image_processor, sample_rate=8)
 
 

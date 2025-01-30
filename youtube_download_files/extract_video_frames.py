@@ -6,7 +6,8 @@ from tqdm import tqdm
 def get_frames_from_video(
     file_path="./dataset/full_video_examples/volcanic_eruption/VBTAcACmcgo.mp4",
     interval_of_window=10,
-    frame_sample_rate=6,
+    frame_sample_rate_for_caption=8,
+    frame_sample_rate_for_classification=8,
 ):
     with tqdm(total=4) as pbar:
         container = av.open(file_path)
@@ -31,14 +32,26 @@ def get_frames_from_video(
         )
         pbar.update(1)
 
-        filtered_array = []
+        updated_frames_for_caption = []
+        updated_frames_for_classification = []
+        # frame rate may not be the same per window so we need to do this
         for f in new_frames:
             size = f.shape[0]
-            indices = np.linspace(0, size - 1, frame_sample_rate).astype(np.int16)
-            filtered_array.append(f[indices])
+            caption_indices = np.linspace(
+                0, size - 1, frame_sample_rate_for_caption
+            ).astype(np.int16)
+            classification_indices = np.linspace(
+                0, size - 1, frame_sample_rate_for_classification
+            ).astype(np.int16)
+            updated_frames_for_caption.append(f[caption_indices])
+            updated_frames_for_classification.append(f[classification_indices])
+
         pbar.update(1)
         return (
-            np.stack([f for f in filtered_array])
+            np.stack([f for f in updated_frames_for_caption])
             .transpose(0, 1, 4, 2, 3)
-            .astype(np.float64)
+            .astype(np.float32),
+            np.stack([f for f in updated_frames_for_classification])
+            .transpose(0, 1, 4, 2, 3)
+            .astype(np.float32),
         )  # batches, frames, height, width, channels
